@@ -16,28 +16,39 @@ function b642buf(b64) {
   return arr.buffer;
 }
 
+function getDeviceId() {
+  let id = localStorage.getItem('sealed_device_id');
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : `dev-${Date.now()}-${Math.random()}`);
+    localStorage.setItem('sealed_device_id', id);
+  }
+  return id;
+}
+
+function normalizeCodeInput(raw) {
+  let c = raw.trim().toLowerCase();
+  if (c && !c.startsWith('#')) c = '#' + c;
+  return c;
+}
+
 // ---------- state ----------
 let ws = null;
-let role = null;      // 'creator' | 'joiner'
 let myCode = null;
-let keyPair = null;   // ECDH key pair
-let sharedKey = null; // derived AES-GCM key
-let peerConnected = false;
+let mySlot = null;
+let sharedKey = null; // AES-GCM key derived from the code itself
+let sessionLive = false;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+const deviceId = getDeviceId();
 
-// ---------- websocket setup ----------
+// ---------- websocket ----------
 function connectSocket() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
-
-  ws.addEventListener('open', () => {});
   ws.addEventListener('message', (ev) => handleServerMessage(JSON.parse(ev.data)));
   ws.addEventListener('close', () => {
-    if (role) {
-      appendSystemMessage('Connection server se toot gaya. Page reload karo.');
-    }
+    if (myCode) appendSystemMessage('Server se connection toot gaya. Page reload karo.');
   });
 }
 
@@ -45,36 +56,16 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-// ---------- crypto ----------
-async function generateKeyPair() {
-  keyPair = await crypto.subtle.generateKey(
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    ['deriveKey']
-  );
-}
-
-async function exportMyPublicKey() {
-  const raw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
-  return buf2b64(raw);
-}
-
-async function deriveSharedKey(peerPublicKeyB64) {
-  const peerKey = await crypto.subtle.importKey(
-    'raw',
-    b642buf(peerPublicKeyB64),
-    { name: 'ECDH', namedCurve: 'P-256' },
-    false,
-    []
-  );
-  sharedKey = await crypto.subtle.deriveKey(
-    { name: 'ECDH', public: peerKey },
-    keyPair.privateKey,
+// ---------- crypto: key derived straight from the shared code (no network exchange) ----------
+async function deriveKeyFromCode(code) {
+  const baseKey = await crypto.subtle.importKey('raw', enc.encode(code), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: enc.encode('sealed-chat-v1'), iterations: 250000, hash: 'SHA-256' },
+    baseKey,
     { name: 'AES-GCM', length: 256 },
     false,
     ['encrypt', 'decrypt']
   );
-  onEncryptionReady();
 }
 
 async function encryptText(text) {
@@ -92,66 +83,65 @@ async function decryptText(ivB64, ctB64) {
 // ---------- server message handling ----------
 async function handleServerMessage(msg) {
   switch (msg.type) {
-    case 'created': {
+    case 'entered': {
       myCode = msg.code;
-      $('code-display').textContent = myCode;
-      $('seal-status').textContent = 'Doosre insaan ke join hone ka wait ho raha hai…';
-      showScreen('screen-waiting');
-      await generateKeyPair();
+      mySlot = msg.slot;
+      $('room-code-label').textContent = myCode;
+      showScreen('screen-chat');
+      switchTab('live');
+      $('chat-messages').innerHTML = '';
+      updatePeerStatus(msg.peerOnline);
+      appendSystemMessage('Tum is chat mein ho. Messages encrypted hain.');
       break;
     }
 
-    case 'peer-joined': {
-      peerConnected = true;
-      await sendMyPublicKey();
-      enterChat();
-      break;
-    }
-
-    case 'joined': {
-      myCode = msg.code;
-      peerConnected = true;
-      await generateKeyPair();
-      await sendMyPublicKey();
-      enterChat();
-      break;
-    }
-
-    case 'signal': {
-      const { kind } = msg.payload;
-      if (kind === 'pubkey') {
-        await deriveSharedKey(msg.payload.key);
-      } else if (kind === 'msg') {
-        try {
-          const text = await decryptText(msg.payload.iv, msg.payload.ct);
-          appendMessage(text, 'peer');
-        } catch (e) {
-          appendSystemMessage('Ek message decrypt nahi ho paaya.');
-        }
+    case 'peer-status': {
+      updatePeerStatus(msg.online);
+      if (!msg.online) {
+        appendSystemMessage('Doosra insaan offline ho gaya.');
       }
       break;
     }
 
-    case 'cancelled': {
-      resetToHome('Code cancel kar diya gaya.');
+    case 'session-started': {
+      sessionLive = true;
+      $('chat-input').disabled = false;
+      $('btn-send').disabled = false;
+      $('peer-status').textContent = 'Dono online ho — chat live hai.';
       break;
     }
 
-    case 'expired': {
-      resetToHome('Code expire ho gaya (30 min tak koi join nahi hua).');
-      break;
-    }
-
-    case 'peer-left': {
-      appendSystemMessage('Doosra insaan chat chhod chuka hai. Ye chat ab band ho chuki hai.');
+    case 'session-closed': {
+      sessionLive = false;
       lockChatInput();
+      appendSystemMessage('Ye baatcheet ab History mein save ho gayi hai.');
+      $('peer-status').textContent = 'Doosre insaan ke online aane ka wait ho raha hai…';
+      break;
+    }
+
+    case 'chat': {
+      try {
+        const text = await decryptText(msg.iv, msg.ct);
+        appendMessage(text, 'peer');
+      } catch (e) {
+        appendSystemMessage('Ek message decrypt nahi ho paaya.');
+      }
+      break;
+    }
+
+    case 'history-data': {
+      renderHistory(msg.sessions);
       break;
     }
 
     case 'error': {
-      showScreen('screen-home');
-      $('home-error').textContent = msg.message;
-      $('btn-join').disabled = false;
+      if (myCode) {
+        appendSystemMessage(msg.message);
+      } else {
+        showScreen('screen-home');
+        $('home-error').textContent = msg.message;
+        $('btn-enter').disabled = false;
+      }
       break;
     }
 
@@ -160,26 +150,12 @@ async function handleServerMessage(msg) {
   }
 }
 
-async function sendMyPublicKey() {
-  const key = await exportMyPublicKey();
-  send({ type: 'signal', payload: { kind: 'pubkey', key } });
-}
-
-function onEncryptionReady() {
-  $('lock-pill').classList.remove('pending');
-  $('lock-text').textContent = 'End-to-end encrypted';
-  $('chat-input').disabled = false;
-  $('btn-send').disabled = false;
-  $('chat-input').focus();
-}
-
-// ---------- UI flows ----------
-function enterChat() {
-  showScreen('screen-chat');
-  $('chat-messages').innerHTML = '';
-  $('lock-pill').classList.add('pending');
-  $('lock-text').textContent = 'Encryption set ho rahi hai…';
-  appendSystemMessage('Aap dono ab connected ho. Messages is device se doosre tak encrypted jaate hain.');
+function updatePeerStatus(online) {
+  if (!sessionLive) {
+    $('peer-status').textContent = online
+      ? 'Doosra insaan online hai, chat shuru ho rahi hai…'
+      : 'Doosre insaan ke online aane ka wait ho raha hai…';
+  }
 }
 
 function lockChatInput() {
@@ -187,18 +163,7 @@ function lockChatInput() {
   $('btn-send').disabled = true;
 }
 
-function resetToHome(message) {
-  role = null;
-  myCode = null;
-  keyPair = null;
-  sharedKey = null;
-  peerConnected = false;
-  $('home-error').textContent = message || '';
-  $('input-join-code').value = '';
-  $('btn-join').disabled = false;
-  showScreen('screen-home');
-}
-
+// ---------- UI: messages ----------
 function appendMessage(text, who) {
   const el = document.createElement('div');
   el.className = `msg ${who}`;
@@ -215,63 +180,99 @@ function appendSystemMessage(text) {
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
 }
 
-// ---------- event wiring ----------
-$('btn-create').addEventListener('click', () => {
-  role = 'creator';
-  $('home-error').textContent = '';
-  send({ type: 'create' });
-});
+// ---------- UI: tabs ----------
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
+  $(`tab-${name}`).classList.add('active');
+  $(`panel-${name}`).classList.add('active');
+  if (name === 'history') {
+    $('history-list').innerHTML = '<p class="empty-note">History load ho rahi hai…</p>';
+    send({ type: 'history' });
+  }
+}
 
-$('btn-join').addEventListener('click', () => {
-  const code = $('input-join-code').value.trim().toUpperCase();
-  if (code.length < 4) {
-    $('home-error').textContent = 'Sahi code daalo.';
+$('tab-live').addEventListener('click', () => switchTab('live'));
+$('tab-history').addEventListener('click', () => switchTab('history'));
+
+// ---------- UI: history rendering ----------
+async function renderHistory(sessions) {
+  const container = $('history-list');
+  container.innerHTML = '';
+
+  if (!sessions || sessions.length === 0) {
+    container.innerHTML = '<p class="empty-note">Abhi tak koi purani baatcheet save nahi hui.</p>';
     return;
   }
-  role = 'joiner';
-  $('home-error').textContent = '';
-  $('btn-join').disabled = true;
-  showScreen('screen-connecting');
-  $('connecting-status').textContent = 'Code check ho raha hai…';
-  send({ type: 'join', code });
-});
 
-$('input-join-code').addEventListener('input', (e) => {
-  e.target.value = e.target.value.toUpperCase();
-});
-$('input-join-code').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') $('btn-join').click();
-});
+  for (const s of sessions) {
+    const block = document.createElement('div');
+    block.className = 'history-session';
 
-$('btn-copy-code').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(myCode);
-    $('btn-copy-code').textContent = 'Copy ho gaya ✓';
-    setTimeout(() => ($('btn-copy-code').textContent = 'Copy karo'), 1500);
-  } catch (e) {
-    /* clipboard may be unavailable; ignore silently */
+    const dateLabel = document.createElement('div');
+    dateLabel.className = 'history-date';
+    dateLabel.textContent = new Date(s.startedAt).toLocaleString('en-IN');
+    block.appendChild(dateLabel);
+
+    for (const m of s.messages) {
+      const el = document.createElement('div');
+      el.className = `msg ${m.slot === mySlot ? 'me' : 'peer'}`;
+      try {
+        el.textContent = await decryptText(m.iv, m.ct);
+      } catch (e) {
+        el.textContent = '[decrypt error]';
+      }
+      block.appendChild(el);
+    }
+
+    container.appendChild(block);
   }
+}
+
+// ---------- event wiring ----------
+$('btn-enter').addEventListener('click', async () => {
+  const code = normalizeCodeInput($('input-code').value);
+  if (!/^#[a-z0-9_]{2,20}$/.test(code)) {
+    $('home-error').textContent = 'Code # ke saath likho, jaise #love79 (3-20 letters/numbers).';
+    return;
+  }
+  $('home-error').textContent = '';
+  $('btn-enter').disabled = true;
+  showScreen('screen-connecting');
+  sharedKey = await deriveKeyFromCode(code);
+  send({ type: 'enter', code, deviceId });
 });
 
-$('btn-cancel-code').addEventListener('click', () => {
-  if (myCode) send({ type: 'cancel', code: myCode });
+$('input-code').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('btn-enter').click();
 });
 
 $('btn-leave').addEventListener('click', () => {
   send({ type: 'leave' });
-  resetToHome('Aapne chat chhod di.');
+  resetToHome();
 });
 
 $('chat-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = $('chat-input');
   const text = input.value.trim();
-  if (!text || !sharedKey) return;
+  if (!text || !sessionLive) return;
   const payload = await encryptText(text);
-  send({ type: 'signal', payload: { kind: 'msg', ...payload } });
+  send({ type: 'message', ...payload });
   appendMessage(text, 'me');
   input.value = '';
 });
+
+function resetToHome() {
+  myCode = null;
+  mySlot = null;
+  sharedKey = null;
+  sessionLive = false;
+  $('input-code').value = '';
+  $('btn-enter').disabled = false;
+  $('home-error').textContent = '';
+  showScreen('screen-home');
+}
 
 // ---------- boot ----------
 connectSocket();
