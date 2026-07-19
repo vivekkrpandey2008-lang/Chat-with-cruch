@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sealed — one-time private chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="brand">
+    <span class="brand-mark">✦</span>
+    <span class="brand-name">Sealed</span>
+  </header>
+
+  <!-- HOME -->
+  <section id="screen-home" class="screen active">
+    <h1>Ek code. Do log. Ek hi baar.</h1>
+    <p class="sub">Code banao, dost ko bhejo. Wo ek baar use karega to seal toot jayegi — koi teesra andar nahi aa sakta. Poori chat is browser se doosre browser tak end-to-end encrypted jaati hai.</p>
+
+    <div class="home-actions">
+      <button id="btn-create" class="btn btn-primary">Naya chat shuru karo</button>
+      <div class="divider"><span>ya</span></div>
+      <div class="join-row">
+        <input id="input-join-code" class="code-input" maxlength="6" placeholder="CODE DAALO" autocomplete="off" autocapitalize="characters">
+        <button id="btn-join" class="btn btn-outline">Join karo</button>
+      </div>
+    </div>
+    <p id="home-error" class="error-text"></p>
+  </section>
+
+  <!-- WAITING (creator holding an unused code) -->
+  <section id="screen-waiting" class="screen">
+    <div class="seal-card">
+      <div class="seal-badge">
+        <svg viewBox="0 0 48 48" width="40" height="40" aria-hidden="true">
+          <path d="M24 4 L40 12 V24 C40 34 33 41 24 44 C15 41 8 34 8 24 V12 Z" fill="none" stroke="currentColor" stroke-width="2.5"/>
+          <rect x="18" y="21" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/>
+          <path d="M20.5 21 V17.5 a3.5 3.5 0 0 1 7 0 V21" fill="none" stroke="currentColor" stroke-width="2.2"/>
+        </svg>
+      </div>
+      <p class="seal-label">Ye raha aapka one-time code</p>
+      <div class="code-display" id="code-display">------</div>
+      <button id="btn-copy-code" class="btn btn-ghost small">Copy karo</button>
+      <p class="seal-status" id="seal-status">Doosre insaan ke join hone ka wait ho raha hai…</p>
+      <button id="btn-cancel-code" class="btn btn-text danger">Ye code cancel karo</button>
+    </div>
+  </section>
+
+  <!-- CONNECTING (joiner, briefly, or key exchange) -->
+  <section id="screen-connecting" class="screen">
+    <div class="seal-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="seal-status" id="connecting-status">Jud rahe hain…</p>
+    </div>
+  </section>
+
+  <!-- CHAT -->
+  <section id="screen-chat" class="screen chat-screen">
+    <div class="chat-topbar">
+      <div class="lock-pill" id="lock-pill">
+        <span class="lock-dot"></span>
+        <span id="lock-text">Encryption set ho rahi hai…</span>
+      </div>
+      <button id="btn-leave" class="btn btn-text danger small">Chat chhodo</button>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <form id="chat-form" class="chat-input-row">
+      <input id="chat-input" class="chat-input" placeholder="Message likho…" autocomplete="off" disabled>
+      <button type="submit" class="btn btn-primary small" id="btn-send" disabled>Bhejo</button>
+    </form>
+  </section>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
