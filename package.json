@@ -1,13 +1,14 @@
 {
   "name": "private-chat",
-  "version": "1.0.0",
-  "description": "One-time-code, two-person, end-to-end encrypted chat relay",
+  "version": "2.0.0",
+  "description": "Permanent-code, two-person, end-to-end encrypted chat with persistent history",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "pg": "^8.12.0"
   }
 }
