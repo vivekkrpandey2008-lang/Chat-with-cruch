@@ -64,35 +64,11 @@
       <span>End-to-end encrypted</span>
     </div>
 
-    <div class="tabs">
-      <button class="tab-btn active" id="tab-live" data-tab="live">Chat</button>
-      <button class="tab-btn" id="tab-history" data-tab="history">History</button>
-    </div>
-
-    <div class="tab-panel active" id="panel-live">
-      <p class="peer-status" id="peer-status">Doosre insaan ke online aane ka wait ho raha hai…</p>
-      <div class="chat-messages" id="chat-messages"></div>
-      <form id="chat-form" class="chat-input-row">
-        <input id="chat-input" class="chat-input" placeholder="Message likho…" autocomplete="off" disabled>
-        <button type="submit" class="btn btn-primary small" id="btn-send" disabled>Bhejo</button>
-      </form>
-    </div>
-
-    <div class="tab-panel" id="panel-history">
-      <!-- list view: WhatsApp-style cards -->
-      <div class="history-list" id="history-list">
-        <p class="empty-note">History load ho rahi hai…</p>
-      </div>
-
-      <!-- detail view: full transcript of one past session -->
-      <div class="history-detail" id="history-detail">
-        <div class="history-detail-topbar">
-          <button class="btn btn-text back-btn" id="btn-history-back">‹ Wapas</button>
-          <button class="btn btn-text danger small" id="btn-delete-session">Delete karo</button>
-        </div>
-        <div class="history-detail-messages" id="history-detail-messages"></div>
-      </div>
-    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <form id="chat-form" class="chat-input-row">
+      <input id="chat-input" class="chat-input" placeholder="Message likho…" autocomplete="off">
+      <button type="submit" class="btn btn-primary small" id="btn-send">Bhejo</button>
+    </form>
   </section>
 
 </div>
