@@ -222,7 +222,97 @@ body {
   justify-content: space-between;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.room-code {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
   margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13.5px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tab-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tab-panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
+.tab-panel.active { display: flex; }
+
+.peer-status {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 8px;
+  text-align: center;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-bottom: 16px;
+}
+
+.history-session {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-date {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  margin-bottom: 2px;
+}
+
+.empty-note {
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+  margin-top: 24px;
 }
 
 .lock-pill {
