@@ -20,11 +20,11 @@
     <div class="theme-picker">
       <button id="btn-theme" class="theme-btn" aria-label="Theme badlo">🎨</button>
       <div class="theme-menu" id="theme-menu">
-        <button class="theme-option" data-theme="sealed"><span class="swatch swatch-sealed"></span>Sealed</button>
-        <button class="theme-option" data-theme="sunset"><span class="swatch swatch-sunset"></span>Sunset</button>
-        <button class="theme-option" data-theme="ocean"><span class="swatch swatch-ocean"></span>Ocean</button>
-        <button class="theme-option" data-theme="blossom"><span class="swatch swatch-blossom"></span>Blossom</button>
-        <button class="theme-option" data-theme="midnight"><span class="swatch swatch-midnight"></span>Midnight</button>
+        <button class="theme-option" data-theme="sealed"><span class="swatch swatch-sealed"></span>Sukoon</button>
+        <button class="theme-option" data-theme="sunset"><span class="swatch swatch-sunset"></span>Sunahari Shaam</button>
+        <button class="theme-option" data-theme="ocean"><span class="swatch swatch-ocean"></span>Neela Samandar</button>
+        <button class="theme-option" data-theme="blossom"><span class="swatch swatch-blossom"></span>Love</button>
+        <button class="theme-option" data-theme="midnight"><span class="swatch swatch-midnight"></span>Raat Rani</button>
       </div>
     </div>
   </header>
@@ -86,7 +86,10 @@
 
       <!-- detail view: full transcript of one past session -->
       <div class="history-detail" id="history-detail">
-        <button class="btn btn-text back-btn" id="btn-history-back">‹ Wapas</button>
+        <div class="history-detail-topbar">
+          <button class="btn btn-text back-btn" id="btn-history-back">‹ Wapas</button>
+          <button class="btn btn-text danger small" id="btn-delete-session">Delete karo</button>
+        </div>
         <div class="history-detail-messages" id="history-detail-messages"></div>
       </div>
     </div>
