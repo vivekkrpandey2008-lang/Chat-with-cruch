@@ -31,12 +31,38 @@ function normalizeCodeInput(raw) {
   return c;
 }
 
+// ---------- theme ----------
+function applyTheme(name) {
+  document.documentElement.setAttribute('data-theme', name);
+  localStorage.setItem('sealed_theme', name);
+}
+(function initTheme() {
+  const saved = localStorage.getItem('sealed_theme') || 'sealed';
+  applyTheme(saved);
+})();
+
+$('btn-theme').addEventListener('click', () => {
+  $('theme-menu').classList.toggle('open');
+});
+document.querySelectorAll('.theme-option').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    applyTheme(btn.dataset.theme);
+    $('theme-menu').classList.remove('open');
+  });
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.theme-picker')) $('theme-menu').classList.remove('open');
+});
+
 // ---------- state ----------
 let ws = null;
 let myCode = null;
 let mySlot = null;
+let myName = '';
+let peerName = '';
 let sharedKey = null; // AES-GCM key derived from the code itself
 let sessionLive = false;
+let lastHistoryData = null; // cache so tapping a card doesn't need a re-fetch
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -86,7 +112,10 @@ async function handleServerMessage(msg) {
     case 'entered': {
       myCode = msg.code;
       mySlot = msg.slot;
+      myName = msg.myName;
+      peerName = msg.peerName || '';
       $('room-code-label').textContent = myCode;
+      updatePeerNameTag(msg.peerOnline);
       showScreen('screen-chat');
       switchTab('live');
       $('chat-messages').innerHTML = '';
@@ -96,10 +125,10 @@ async function handleServerMessage(msg) {
     }
 
     case 'peer-status': {
+      if (msg.name) peerName = msg.name;
+      updatePeerNameTag(msg.online);
       updatePeerStatus(msg.online);
-      if (!msg.online) {
-        appendSystemMessage('Doosra insaan offline ho gaya.');
-      }
+      if (!msg.online) appendSystemMessage('Doosra insaan offline ho gaya.');
       break;
     }
 
@@ -122,7 +151,7 @@ async function handleServerMessage(msg) {
     case 'chat': {
       try {
         const text = await decryptText(msg.iv, msg.ct);
-        appendMessage(text, 'peer');
+        appendMessage(text, 'peer', peerName);
       } catch (e) {
         appendSystemMessage('Ek message decrypt nahi ho paaya.');
       }
@@ -130,7 +159,8 @@ async function handleServerMessage(msg) {
     }
 
     case 'history-data': {
-      renderHistory(msg.sessions);
+      lastHistoryData = msg;
+      renderHistoryList(msg);
       break;
     }
 
@@ -150,6 +180,15 @@ async function handleServerMessage(msg) {
   }
 }
 
+function updatePeerNameTag(online) {
+  const tag = $('peer-name-tag');
+  if (peerName) {
+    tag.textContent = online ? `${peerName} ke saath (online)` : `${peerName} ke saath (offline)`;
+  } else {
+    tag.textContent = 'Doosre insaan ka wait ho raha hai…';
+  }
+}
+
 function updatePeerStatus(online) {
   if (!sessionLive) {
     $('peer-status').textContent = online
@@ -164,11 +203,28 @@ function lockChatInput() {
 }
 
 // ---------- UI: messages ----------
-function appendMessage(text, who) {
+function appendMessage(text, who, senderName) {
+  const wrapEl = document.createElement('div');
+  wrapEl.style.display = 'flex';
+  wrapEl.style.flexDirection = 'column';
+  wrapEl.style.alignItems = who === 'me' ? 'flex-end' : 'flex-start';
+  wrapEl.style.maxWidth = '78%';
+  wrapEl.style.alignSelf = who === 'me' ? 'flex-end' : 'flex-start';
+
+  if (senderName) {
+    const label = document.createElement('div');
+    label.className = 'msg-name';
+    label.textContent = senderName;
+    wrapEl.appendChild(label);
+  }
+
   const el = document.createElement('div');
   el.className = `msg ${who}`;
+  el.style.maxWidth = '100%';
   el.textContent = text;
-  $('chat-messages').appendChild(el);
+  wrapEl.appendChild(el);
+
+  $('chat-messages').appendChild(wrapEl);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
 }
 
@@ -187,6 +243,8 @@ function switchTab(name) {
   $(`tab-${name}`).classList.add('active');
   $(`panel-${name}`).classList.add('active');
   if (name === 'history') {
+    $('history-detail').classList.remove('open');
+    $('history-list').classList.remove('hidden');
     $('history-list').innerHTML = '<p class="empty-note">History load ho rahi hai…</p>';
     send({ type: 'history' });
   }
@@ -194,9 +252,14 @@ function switchTab(name) {
 
 $('tab-live').addEventListener('click', () => switchTab('live'));
 $('tab-history').addEventListener('click', () => switchTab('history'));
+$('btn-history-back').addEventListener('click', () => {
+  $('history-detail').classList.remove('open');
+  $('history-list').classList.remove('hidden');
+});
 
-// ---------- UI: history rendering ----------
-async function renderHistory(sessions) {
+// ---------- UI: WhatsApp-style history list ----------
+async function renderHistoryList(data) {
+  const { names, sessions } = data;
   const container = $('history-list');
   container.innerHTML = '';
 
@@ -206,41 +269,94 @@ async function renderHistory(sessions) {
   }
 
   for (const s of sessions) {
-    const block = document.createElement('div');
-    block.className = 'history-session';
-
-    const dateLabel = document.createElement('div');
-    dateLabel.className = 'history-date';
-    dateLabel.textContent = new Date(s.startedAt).toLocaleString('en-IN');
-    block.appendChild(dateLabel);
-
-    for (const m of s.messages) {
-      const el = document.createElement('div');
-      el.className = `msg ${m.slot === mySlot ? 'me' : 'peer'}`;
+    const lastMsg = s.messages[s.messages.length - 1];
+    let preview = '…';
+    if (lastMsg) {
       try {
-        el.textContent = await decryptText(m.iv, m.ct);
+        const text = await decryptText(lastMsg.iv, lastMsg.ct);
+        const who = lastMsg.slot === mySlot ? 'Tum: ' : '';
+        preview = who + text;
       } catch (e) {
-        el.textContent = '[decrypt error]';
+        preview = '[decrypt error]';
       }
-      block.appendChild(el);
     }
 
-    container.appendChild(block);
+    const card = document.createElement('button');
+    card.className = 'history-card';
+    card.innerHTML = `
+      <div class="history-avatar">💬</div>
+      <div class="history-card-body">
+        <div class="history-card-top">
+          <span class="history-card-date">${new Date(s.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+        </div>
+        <div class="history-card-preview"></div>
+      </div>
+    `;
+    card.querySelector('.history-card-preview').textContent = preview;
+    card.addEventListener('click', () => openHistoryDetail(s, names));
+    container.appendChild(card);
   }
+}
+
+async function openHistoryDetail(session, names) {
+  const container = $('history-detail-messages');
+  container.innerHTML = '';
+
+  for (const m of session.messages) {
+    const who = m.slot === mySlot ? 'me' : 'peer';
+    const senderName = m.slot === mySlot ? (myName || 'Tum') : (names[m.slot] || 'Doosra insaan');
+    let text;
+    try {
+      text = await decryptText(m.iv, m.ct);
+    } catch (e) {
+      text = '[decrypt error]';
+    }
+
+    const wrapEl = document.createElement('div');
+    wrapEl.style.display = 'flex';
+    wrapEl.style.flexDirection = 'column';
+    wrapEl.style.alignItems = who === 'me' ? 'flex-end' : 'flex-start';
+    wrapEl.style.maxWidth = '78%';
+    wrapEl.style.alignSelf = who === 'me' ? 'flex-end' : 'flex-start';
+
+    const label = document.createElement('div');
+    label.className = 'msg-name';
+    label.textContent = senderName;
+    wrapEl.appendChild(label);
+
+    const el = document.createElement('div');
+    el.className = `msg ${who}`;
+    el.style.maxWidth = '100%';
+    el.textContent = text;
+    wrapEl.appendChild(el);
+
+    container.appendChild(wrapEl);
+  }
+
+  $('history-list').classList.add('hidden');
+  $('history-detail').classList.add('open');
 }
 
 // ---------- event wiring ----------
 $('btn-enter').addEventListener('click', async () => {
   const code = normalizeCodeInput($('input-code').value);
+  const name = $('input-name').value.trim().slice(0, 30);
+
+  if (!name) {
+    $('home-error').textContent = 'Pehle apna naam likho.';
+    return;
+  }
   if (!/^#[a-z0-9_]{2,20}$/.test(code)) {
     $('home-error').textContent = 'Code # ke saath likho, jaise #love79 (3-20 letters/numbers).';
     return;
   }
+
+  localStorage.setItem('sealed_name', name);
   $('home-error').textContent = '';
   $('btn-enter').disabled = true;
   showScreen('screen-connecting');
   sharedKey = await deriveKeyFromCode(code);
-  send({ type: 'enter', code, deviceId });
+  send({ type: 'enter', code, deviceId, name });
 });
 
 $('input-code').addEventListener('keydown', (e) => {
@@ -259,13 +375,14 @@ $('chat-form').addEventListener('submit', async (e) => {
   if (!text || !sessionLive) return;
   const payload = await encryptText(text);
   send({ type: 'message', ...payload });
-  appendMessage(text, 'me');
+  appendMessage(text, 'me', myName);
   input.value = '';
 });
 
 function resetToHome() {
   myCode = null;
   mySlot = null;
+  peerName = '';
   sharedKey = null;
   sessionLive = false;
   $('input-code').value = '';
@@ -275,4 +392,9 @@ function resetToHome() {
 }
 
 // ---------- boot ----------
+(function restoreName() {
+  const saved = localStorage.getItem('sealed_name');
+  if (saved) $('input-name').value = saved;
+})();
+
 connectSocket();
