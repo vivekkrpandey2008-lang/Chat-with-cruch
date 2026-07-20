@@ -28,28 +28,22 @@ async function initDb() {
   `);
   await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS slot1_name TEXT;`);
   await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS slot2_name TEXT;`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      code TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      started_at TIMESTAMPTZ DEFAULT now(),
-      closed_at TIMESTAMPTZ
-    );
-  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS messages (
       id SERIAL PRIMARY KEY,
       code TEXT NOT NULL,
-      session_id TEXT NOT NULL,
       sender_slot INTEGER NOT NULL,
       iv TEXT NOT NULL,
       ciphertext TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_code ON sessions(code);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);`);
+  // Older deployments had a session_id column - drop it, we no longer use sessions.
+  await pool.query(`ALTER TABLE messages DROP COLUMN IF EXISTS session_id;`);
+  await pool.query(`DROP TABLE IF EXISTS sessions;`);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_code ON messages(code);`);
   console.log('Database ready.');
 }
 initDb().catch((e) => console.error('DB init failed:', e.message));
@@ -67,9 +61,8 @@ function send(ws, obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-// In-memory bookkeeping (fast path) - source of truth for data is Postgres.
-const liveSockets = new Map();    // code -> { 1: ws|null, 2: ws|null }
-const activeSessions = new Map(); // code -> session_id currently live
+// In-memory bookkeeping of who is currently connected for each code.
+const liveSockets = new Map(); // code -> { 1: ws|null, 2: ws|null }
 
 function registerLive(code, slot, ws) {
   if (!liveSockets.has(code)) liveSockets.set(code, { 1: null, 2: null });
@@ -84,9 +77,10 @@ function getPeerSocket(code, slot) {
   if (!entry) return null;
   return slot === 1 ? entry[2] : entry[1];
 }
-function bothOnline(code) {
+function isPeerOnline(code, slot) {
   const entry = liveSockets.get(code);
-  return !!(entry && entry[1] && entry[2]);
+  if (!entry) return false;
+  return slot === 1 ? !!entry[2] : !!entry[1];
 }
 
 // Claim slot 1 or 2 for this device on this code, saving/updating its display name.
@@ -143,69 +137,18 @@ async function getRoomNames(code) {
   return { 1: res.rows[0].slot1_name, 2: res.rows[0].slot2_name };
 }
 
-async function maybeStartSession(code) {
-  if (!bothOnline(code)) return;
-  if (activeSessions.has(code)) return;
-
-  const existing = await pool.query(
-    "SELECT id FROM sessions WHERE code = $1 AND status = 'active' LIMIT 1",
+async function fetchMessages(code) {
+  const res = await pool.query(
+    'SELECT id, sender_slot, iv, ciphertext, created_at FROM messages WHERE code = $1 ORDER BY created_at ASC LIMIT 1000',
     [code]
   );
-
-  let sessionId;
-  if (existing.rows.length > 0) {
-    sessionId = existing.rows[0].id;
-  } else {
-    sessionId = crypto.randomUUID();
-    await pool.query('INSERT INTO sessions (id, code) VALUES ($1, $2)', [sessionId, code]);
-  }
-  activeSessions.set(code, sessionId);
-
-  const entry = liveSockets.get(code);
-  send(entry[1], { type: 'session-started' });
-  send(entry[2], { type: 'session-started' });
-}
-
-async function endSession(code, reason) {
-  const sessionId = activeSessions.get(code);
-  if (!sessionId) return;
-  activeSessions.delete(code);
-  await pool.query(
-    "UPDATE sessions SET status = 'closed', closed_at = now() WHERE id = $1",
-    [sessionId]
-  );
-  const entry = liveSockets.get(code);
-  if (entry) {
-    send(entry[1], { type: 'session-closed', reason });
-    send(entry[2], { type: 'session-closed', reason });
-  }
-}
-
-async function fetchHistory(code) {
-  const names = await getRoomNames(code);
-  const sessions = await pool.query(
-    "SELECT id, started_at, closed_at FROM sessions WHERE code = $1 AND status = 'closed' ORDER BY started_at DESC LIMIT 100",
-    [code]
-  );
-  const out = [];
-  for (const s of sessions.rows) {
-    const msgs = await pool.query(
-      'SELECT sender_slot, iv, ciphertext, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
-      [s.id]
-    );
-    out.push({
-      id: s.id,
-      startedAt: s.started_at,
-      closedAt: s.closed_at,
-      messages: msgs.rows.map((m) => ({
-        slot: m.sender_slot,
-        iv: m.iv,
-        ct: m.ciphertext,
-        at: m.created_at,
-      })),
-    });
-  }
-  return { names, sessions: out };
+  return res.rows.map((m) => ({
+    id: m.id,
+    slot: m.sender_slot,
+    iv: m.iv,
+    ct: m.ciphertext,
+    at: m.created_at,
+  }));
 }
 
 // ---------- websocket protocol ----------
@@ -251,20 +194,20 @@ wss.on('connection', (ws) => {
 
         const names = await getRoomNames(code);
         const peerName = slot === 1 ? names[2] : names[1];
+        const messages = await fetchMessages(code);
 
         send(ws, {
           type: 'entered',
           code,
           slot,
-          peerOnline: bothOnline(code),
+          peerOnline: isPeerOnline(code, slot),
           peerName: peerName || null,
           myName: name,
+          messages,
         });
 
         const peer = getPeerSocket(code, slot);
         send(peer, { type: 'peer-status', online: true, name });
-
-        await maybeStartSession(code);
       } catch (e) {
         console.error(e);
         send(ws, { type: 'error', message: 'Kuch galat ho gaya, dobara try karo.' });
@@ -275,74 +218,49 @@ wss.on('connection', (ws) => {
     if (!ws.code) return; // must 'enter' before anything else
 
     if (msg.type === 'message') {
-      const sessionId = activeSessions.get(ws.code);
-      if (!sessionId) {
-        send(ws, { type: 'error', message: 'Dono log abhi online nahi hain, message nahi bhej sakte.' });
-        return;
-      }
       try {
-        await pool.query(
-          'INSERT INTO messages (code, session_id, sender_slot, iv, ciphertext) VALUES ($1,$2,$3,$4,$5)',
-          [ws.code, sessionId, ws.slot, msg.iv, msg.ct]
+        const ins = await pool.query(
+          'INSERT INTO messages (code, sender_slot, iv, ciphertext) VALUES ($1,$2,$3,$4) RETURNING id',
+          [ws.code, ws.slot, msg.iv, msg.ct]
         );
+        const id = ins.rows[0].id;
+
+        send(ws, { type: 'message-ack', tempId: msg.tempId, id });
+
+        const peer = getPeerSocket(ws.code, ws.slot);
+        send(peer, { type: 'chat', id, slot: ws.slot, iv: msg.iv, ct: msg.ct });
       } catch (e) {
         console.error('message save failed', e.message);
-      }
-      const peer = getPeerSocket(ws.code, ws.slot);
-      send(peer, { type: 'chat', slot: ws.slot, iv: msg.iv, ct: msg.ct });
-      return;
-    }
-
-    if (msg.type === 'leave') {
-      await endSession(ws.code, 'left');
-      return;
-    }
-
-    if (msg.type === 'history') {
-      try {
-        const data = await fetchHistory(ws.code);
-        send(ws, { type: 'history-data', names: data.names, sessions: data.sessions });
-      } catch (e) {
-        console.error(e);
-        send(ws, { type: 'error', message: 'History load nahi ho payi.' });
+        send(ws, { type: 'error', message: 'Message save nahi ho paya.' });
       }
       return;
     }
 
-    if (msg.type === 'delete-session') {
-      const sessionId = String(msg.sessionId || '');
-      if (!sessionId) return;
+    if (msg.type === 'delete-message') {
+      const id = Number(msg.id);
+      if (!id) return;
       try {
-        await pool.query('DELETE FROM messages WHERE session_id = $1 AND code = $2', [sessionId, ws.code]);
         const del = await pool.query(
-          "DELETE FROM sessions WHERE id = $1 AND code = $2 AND status = 'closed' RETURNING id",
-          [sessionId, ws.code]
+          'DELETE FROM messages WHERE id = $1 AND code = $2 AND sender_slot = $3 RETURNING id',
+          [id, ws.code, ws.slot]
         );
         if (del.rows.length > 0) {
-          send(ws, { type: 'session-deleted', sessionId });
+          send(ws, { type: 'message-deleted', id });
           const peer = getPeerSocket(ws.code, ws.slot);
-          send(peer, { type: 'session-deleted', sessionId });
-        } else {
-          send(ws, { type: 'error', message: 'Ye baatcheet delete nahi ho payi (shayad abhi live hai).' });
+          send(peer, { type: 'message-deleted', id });
         }
       } catch (e) {
-        console.error('delete-session failed', e.message);
-        send(ws, { type: 'error', message: 'Delete karte waqt kuch galat ho gaya.' });
+        console.error('delete-message failed', e.message);
       }
       return;
     }
   });
 
-  ws.on('close', async () => {
+  ws.on('close', () => {
     if (!ws.code) return;
     unregisterLive(ws.code, ws.slot, ws);
     const peer = getPeerSocket(ws.code, ws.slot);
     send(peer, { type: 'peer-status', online: false });
-    try {
-      await endSession(ws.code, 'disconnected');
-    } catch (e) {
-      console.error(e);
-    }
   });
 });
 
@@ -350,3 +268,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Sealed chat server running on port ${PORT}`);
 });
+      
