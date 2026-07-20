@@ -164,6 +164,19 @@ async function handleServerMessage(msg) {
       break;
     }
 
+    case 'session-deleted': {
+      if (lastHistoryData) {
+        lastHistoryData.sessions = lastHistoryData.sessions.filter((s) => s.id !== msg.sessionId);
+        if (currentDetailSessionId === msg.sessionId) {
+          currentDetailSessionId = null;
+          $('history-detail').classList.remove('open');
+          $('history-list').classList.remove('hidden');
+        }
+        renderHistoryList(lastHistoryData);
+      }
+      break;
+    }
+
     case 'error': {
       if (myCode) {
         appendSystemMessage(msg.message);
@@ -281,24 +294,47 @@ async function renderHistoryList(data) {
       }
     }
 
-    const card = document.createElement('button');
+    const card = document.createElement('div');
     card.className = 'history-card';
     card.innerHTML = `
-      <div class="history-avatar">💬</div>
-      <div class="history-card-body">
-        <div class="history-card-top">
-          <span class="history-card-date">${new Date(s.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+      <div class="history-card-open" role="button">
+        <div class="history-avatar">💬</div>
+        <div class="history-card-body">
+          <div class="history-card-top">
+            <span class="history-card-date">${new Date(s.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+          </div>
+          <div class="history-card-preview"></div>
         </div>
-        <div class="history-card-preview"></div>
       </div>
+      <button class="history-card-delete" aria-label="Delete karo">🗑</button>
     `;
     card.querySelector('.history-card-preview').textContent = preview;
-    card.addEventListener('click', () => openHistoryDetail(s, names));
+    card.querySelector('.history-card-open').addEventListener('click', () => openHistoryDetail(s, names));
+    card.querySelector('.history-card-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      confirmAndDelete(s.id, card);
+    });
     container.appendChild(card);
   }
 }
 
+let currentDetailSessionId = null;
+
+function confirmAndDelete(sessionId, cardEl) {
+  const ok = window.confirm('Ye baatcheet hamesha ke liye delete ho jayegi. Pakka?');
+  if (!ok) return;
+  send({ type: 'delete-session', sessionId });
+}
+
+$('btn-delete-session').addEventListener('click', () => {
+  if (!currentDetailSessionId) return;
+  const ok = window.confirm('Ye baatcheet hamesha ke liye delete ho jayegi. Pakka?');
+  if (!ok) return;
+  send({ type: 'delete-session', sessionId: currentDetailSessionId });
+});
+
 async function openHistoryDetail(session, names) {
+  currentDetailSessionId = session.id;
   const container = $('history-detail-messages');
   container.innerHTML = '';
 
@@ -398,3 +434,4 @@ function resetToHome() {
 })();
 
 connectSocket();
+          
