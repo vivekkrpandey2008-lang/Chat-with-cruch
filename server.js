@@ -26,6 +26,8 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS slot1_name TEXT;`);
+  await pool.query(`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS slot2_name TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -66,7 +68,7 @@ function send(ws, obj) {
 }
 
 // In-memory bookkeeping (fast path) - source of truth for data is Postgres.
-const liveSockets = new Map();   // code -> { 1: ws|null, 2: ws|null }
+const liveSockets = new Map();    // code -> { 1: ws|null, 2: ws|null }
 const activeSessions = new Map(); // code -> session_id currently live
 
 function registerLive(code, slot, ws) {
@@ -87,17 +89,17 @@ function bothOnline(code) {
   return !!(entry && entry[1] && entry[2]);
 }
 
-// Claim slot 1 or 2 for this device on this code. Returns { slot } or { slot: null } if full.
-async function claimSlot(code, deviceId) {
+// Claim slot 1 or 2 for this device on this code, saving/updating its display name.
+async function claimSlot(code, deviceId, name) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     let res = await client.query('SELECT * FROM rooms WHERE code = $1 FOR UPDATE', [code]);
 
     if (res.rows.length === 0) {
-      const ins = await client.query(
-        'INSERT INTO rooms (code, slot1_device) VALUES ($1, $2) RETURNING *',
-        [code, deviceId]
+      await client.query(
+        'INSERT INTO rooms (code, slot1_device, slot1_name) VALUES ($1, $2, $3)',
+        [code, deviceId, name]
       );
       await client.query('COMMIT');
       return { slot: 1 };
@@ -105,20 +107,22 @@ async function claimSlot(code, deviceId) {
 
     const room = res.rows[0];
     if (room.slot1_device === deviceId) {
+      await client.query('UPDATE rooms SET slot1_name = $1 WHERE code = $2', [name, code]);
       await client.query('COMMIT');
       return { slot: 1 };
     }
     if (room.slot2_device === deviceId) {
+      await client.query('UPDATE rooms SET slot2_name = $1 WHERE code = $2', [name, code]);
       await client.query('COMMIT');
       return { slot: 2 };
     }
     if (!room.slot1_device) {
-      await client.query('UPDATE rooms SET slot1_device = $1 WHERE code = $2', [deviceId, code]);
+      await client.query('UPDATE rooms SET slot1_device = $1, slot1_name = $2 WHERE code = $3', [deviceId, name, code]);
       await client.query('COMMIT');
       return { slot: 1 };
     }
     if (!room.slot2_device) {
-      await client.query('UPDATE rooms SET slot2_device = $1 WHERE code = $2', [deviceId, code]);
+      await client.query('UPDATE rooms SET slot2_device = $1, slot2_name = $2 WHERE code = $3', [deviceId, name, code]);
       await client.query('COMMIT');
       return { slot: 2 };
     }
@@ -131,6 +135,12 @@ async function claimSlot(code, deviceId) {
   } finally {
     client.release();
   }
+}
+
+async function getRoomNames(code) {
+  const res = await pool.query('SELECT slot1_name, slot2_name FROM rooms WHERE code = $1', [code]);
+  if (res.rows.length === 0) return { 1: null, 2: null };
+  return { 1: res.rows[0].slot1_name, 2: res.rows[0].slot2_name };
 }
 
 async function maybeStartSession(code) {
@@ -172,6 +182,7 @@ async function endSession(code, reason) {
 }
 
 async function fetchHistory(code) {
+  const names = await getRoomNames(code);
   const sessions = await pool.query(
     "SELECT id, started_at, closed_at FROM sessions WHERE code = $1 AND status = 'closed' ORDER BY started_at DESC LIMIT 100",
     [code]
@@ -194,7 +205,7 @@ async function fetchHistory(code) {
       })),
     });
   }
-  return out;
+  return { names, sessions: out };
 }
 
 // ---------- websocket protocol ----------
@@ -202,6 +213,7 @@ wss.on('connection', (ws) => {
   ws.code = null;
   ws.slot = null;
   ws.deviceId = null;
+  ws.name = null;
 
   ws.on('message', async (raw) => {
     let msg;
@@ -214,6 +226,7 @@ wss.on('connection', (ws) => {
     if (msg.type === 'enter') {
       const code = normalizeCode(msg.code);
       const deviceId = String(msg.deviceId || '').slice(0, 80);
+      const name = String(msg.name || '').trim().slice(0, 30) || 'Anonymous';
 
       if (!CODE_RE.test(code)) {
         send(ws, { type: 'error', message: 'Code # ke saath likho, jaise #love79 (3-20 letters/numbers).' });
@@ -225,7 +238,7 @@ wss.on('connection', (ws) => {
       }
 
       try {
-        const { slot } = await claimSlot(code, deviceId);
+        const { slot } = await claimSlot(code, deviceId, name);
         if (!slot) {
           send(ws, { type: 'error', message: 'Ye code pehle hi do logo ke beech use ho raha hai.' });
           return;
@@ -233,12 +246,23 @@ wss.on('connection', (ws) => {
         ws.code = code;
         ws.slot = slot;
         ws.deviceId = deviceId;
+        ws.name = name;
         registerLive(code, slot, ws);
 
-        send(ws, { type: 'entered', code, slot, peerOnline: bothOnline(code) });
+        const names = await getRoomNames(code);
+        const peerName = slot === 1 ? names[2] : names[1];
+
+        send(ws, {
+          type: 'entered',
+          code,
+          slot,
+          peerOnline: bothOnline(code),
+          peerName: peerName || null,
+          myName: name,
+        });
 
         const peer = getPeerSocket(code, slot);
-        send(peer, { type: 'peer-status', online: true });
+        send(peer, { type: 'peer-status', online: true, name });
 
         await maybeStartSession(code);
       } catch (e) {
@@ -276,8 +300,8 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'history') {
       try {
-        const sessions = await fetchHistory(ws.code);
-        send(ws, { type: 'history-data', sessions });
+        const data = await fetchHistory(ws.code);
+        send(ws, { type: 'history-data', names: data.names, sessions: data.sessions });
       } catch (e) {
         console.error(e);
         send(ws, { type: 'error', message: 'History load nahi ho payi.' });
@@ -303,4 +327,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Sealed chat server running on port ${PORT}`);
 });
-                   
