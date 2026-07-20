@@ -2,7 +2,7 @@
 <html lang="hi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Sealed — private two-person chat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -13,16 +13,29 @@
 <div class="wrap">
 
   <header class="brand">
-    <span class="brand-mark">✦</span>
-    <span class="brand-name">Elomeno7</span>
+    <div class="brand-left">
+      <span class="brand-mark">✦</span>
+      <span class="brand-name">Sealed</span>
+    </div>
+    <div class="theme-picker">
+      <button id="btn-theme" class="theme-btn" aria-label="Theme badlo">🎨</button>
+      <div class="theme-menu" id="theme-menu">
+        <button class="theme-option" data-theme="sealed"><span class="swatch swatch-sealed"></span>Sealed</button>
+        <button class="theme-option" data-theme="sunset"><span class="swatch swatch-sunset"></span>Sunset</button>
+        <button class="theme-option" data-theme="ocean"><span class="swatch swatch-ocean"></span>Ocean</button>
+        <button class="theme-option" data-theme="blossom"><span class="swatch swatch-blossom"></span>Blossom</button>
+        <button class="theme-option" data-theme="midnight"><span class="swatch swatch-midnight"></span>Midnight</button>
+      </div>
+    </div>
   </header>
 
   <!-- HOME -->
   <section id="screen-home" class="screen active">
-    <h1>CHAT WITH YOUR CRUSH</h1>
-    <p class="sub"> ye chat end-to-end encrypted hai and  
-    ⚠️ ispe abhi kaam chal raha hai</p>
+    <h1>Apna khud ka private code banao.</h1>
+    <p class="sub">Ek code chuno jo sirf tum aur tumhara dost jaante ho — jaise <strong>#love79</strong> ya <strong>#iron25</strong>. Ye code hamesha ke liye tumhara chat room hai; sirf pehle do log hi ise use kar sakte hain, koi teesra andar nahi aa sakta.</p>
+
     <div class="home-actions">
+      <input id="input-name" class="code-input name-input" maxlength="30" placeholder="Apna naam likho" autocomplete="off">
       <input id="input-code" class="code-input" maxlength="22" placeholder="#love79" autocomplete="off" autocapitalize="none">
       <button id="btn-enter" class="btn btn-primary">Chat mein jao</button>
     </div>
@@ -42,12 +55,13 @@
     <div class="chat-topbar">
       <div class="topbar-left">
         <span class="room-code" id="room-code-label">#code</span>
-        <div class="lock-pill">
-          <span class="lock-dot"></span>
-          <span>End-to-end encrypted</span>
-        </div>
+        <span class="peer-name-tag" id="peer-name-tag"></span>
       </div>
       <button id="btn-leave" class="btn btn-text danger small">Chhodo</button>
+    </div>
+    <div class="lock-pill">
+      <span class="lock-dot"></span>
+      <span>End-to-end encrypted</span>
     </div>
 
     <div class="tabs">
@@ -65,8 +79,15 @@
     </div>
 
     <div class="tab-panel" id="panel-history">
+      <!-- list view: WhatsApp-style cards -->
       <div class="history-list" id="history-list">
         <p class="empty-note">History load ho rahi hai…</p>
+      </div>
+
+      <!-- detail view: full transcript of one past session -->
+      <div class="history-detail" id="history-detail">
+        <button class="btn btn-text back-btn" id="btn-history-back">‹ Wapas</button>
+        <div class="history-detail-messages" id="history-detail-messages"></div>
       </div>
     </div>
   </section>
