@@ -308,6 +308,29 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+
+    if (msg.type === 'delete-session') {
+      const sessionId = String(msg.sessionId || '');
+      if (!sessionId) return;
+      try {
+        await pool.query('DELETE FROM messages WHERE session_id = $1 AND code = $2', [sessionId, ws.code]);
+        const del = await pool.query(
+          "DELETE FROM sessions WHERE id = $1 AND code = $2 AND status = 'closed' RETURNING id",
+          [sessionId, ws.code]
+        );
+        if (del.rows.length > 0) {
+          send(ws, { type: 'session-deleted', sessionId });
+          const peer = getPeerSocket(ws.code, ws.slot);
+          send(peer, { type: 'session-deleted', sessionId });
+        } else {
+          send(ws, { type: 'error', message: 'Ye baatcheet delete nahi ho payi (shayad abhi live hai).' });
+        }
+      } catch (e) {
+        console.error('delete-session failed', e.message);
+        send(ws, { type: 'error', message: 'Delete karte waqt kuch galat ho gaya.' });
+      }
+      return;
+    }
   });
 
   ws.on('close', async () => {
@@ -326,4 +349,6 @@ wss.on('connection', (ws) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Sealed chat server running on port ${PORT}`);
+});
+
 });
