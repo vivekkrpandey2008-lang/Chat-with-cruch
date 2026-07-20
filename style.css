@@ -448,13 +448,30 @@ body {
 .history-detail.open { display: flex; }
 .history-list.hidden { display: none; }
 
+.history-detail-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
 .back-btn {
-  align-self: flex-start;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--accent);
   padding: 6px 4px 12px;
 }
+
+.history-card-delete {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 17px;
+  padding: 6px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.history-card-delete:active { color: var(--danger); }
 
 .history-detail-messages {
   flex: 1;
