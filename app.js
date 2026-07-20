@@ -31,6 +31,10 @@ function normalizeCodeInput(raw) {
   return c;
 }
 
+function makeTempId() {
+  return (crypto.randomUUID ? crypto.randomUUID() : `tmp-${Date.now()}-${Math.random()}`);
+}
+
 // ---------- theme ----------
 function applyTheme(name) {
   document.documentElement.setAttribute('data-theme', name);
@@ -61,8 +65,6 @@ let mySlot = null;
 let myName = '';
 let peerName = '';
 let sharedKey = null; // AES-GCM key derived from the code itself
-let sessionLive = false;
-let lastHistoryData = null; // cache so tapping a card doesn't need a re-fetch
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -117,63 +119,49 @@ async function handleServerMessage(msg) {
       $('room-code-label').textContent = myCode;
       updatePeerNameTag(msg.peerOnline);
       showScreen('screen-chat');
-      switchTab('live');
       $('chat-messages').innerHTML = '';
-      updatePeerStatus(msg.peerOnline);
-      appendSystemMessage('Tum is chat mein ho. Messages encrypted hain.');
+
+      for (const m of msg.messages) {
+        const who = m.slot === mySlot ? 'me' : 'peer';
+        const senderName = m.slot === mySlot ? myName : (peerName || 'Doosra insaan');
+        try {
+          const text = await decryptText(m.iv, m.ct);
+          appendMessage(text, who, senderName, m.id);
+        } catch (e) {
+          appendMessage('[decrypt error]', who, senderName, m.id);
+        }
+      }
       break;
     }
 
     case 'peer-status': {
       if (msg.name) peerName = msg.name;
       updatePeerNameTag(msg.online);
-      updatePeerStatus(msg.online);
-      if (!msg.online) appendSystemMessage('Doosra insaan offline ho gaya.');
       break;
     }
 
-    case 'session-started': {
-      sessionLive = true;
-      $('chat-input').disabled = false;
-      $('btn-send').disabled = false;
-      $('peer-status').textContent = 'Dono online ho — chat live hai.';
-      break;
-    }
-
-    case 'session-closed': {
-      sessionLive = false;
-      lockChatInput();
-      appendSystemMessage('Ye baatcheet ab History mein save ho gayi hai.');
-      $('peer-status').textContent = 'Doosre insaan ke online aane ka wait ho raha hai…';
+    case 'message-ack': {
+      const el = document.querySelector(`[data-tempid="${msg.tempId}"]`);
+      if (el) {
+        el.dataset.id = msg.id;
+        delete el.dataset.tempid;
+      }
       break;
     }
 
     case 'chat': {
       try {
         const text = await decryptText(msg.iv, msg.ct);
-        appendMessage(text, 'peer', peerName);
+        appendMessage(text, 'peer', peerName || 'Doosra insaan', msg.id);
       } catch (e) {
         appendSystemMessage('Ek message decrypt nahi ho paaya.');
       }
       break;
     }
 
-    case 'history-data': {
-      lastHistoryData = msg;
-      renderHistoryList(msg);
-      break;
-    }
-
-    case 'session-deleted': {
-      if (lastHistoryData) {
-        lastHistoryData.sessions = lastHistoryData.sessions.filter((s) => s.id !== msg.sessionId);
-        if (currentDetailSessionId === msg.sessionId) {
-          currentDetailSessionId = null;
-          $('history-detail').classList.remove('open');
-          $('history-list').classList.remove('hidden');
-        }
-        renderHistoryList(lastHistoryData);
-      }
+    case 'message-deleted': {
+      const el = document.querySelector(`[data-id="${msg.id}"]`);
+      if (el) el.remove();
       break;
     }
 
@@ -202,27 +190,16 @@ function updatePeerNameTag(online) {
   }
 }
 
-function updatePeerStatus(online) {
-  if (!sessionLive) {
-    $('peer-status').textContent = online
-      ? 'Doosra insaan online hai, chat shuru ho rahi hai…'
-      : 'Doosre insaan ke online aane ka wait ho raha hai…';
-  }
-}
-
-function lockChatInput() {
-  $('chat-input').disabled = true;
-  $('btn-send').disabled = true;
-}
-
 // ---------- UI: messages ----------
-function appendMessage(text, who, senderName) {
+function appendMessage(text, who, senderName, id) {
   const wrapEl = document.createElement('div');
   wrapEl.style.display = 'flex';
   wrapEl.style.flexDirection = 'column';
   wrapEl.style.alignItems = who === 'me' ? 'flex-end' : 'flex-start';
   wrapEl.style.maxWidth = '78%';
   wrapEl.style.alignSelf = who === 'me' ? 'flex-end' : 'flex-start';
+
+  if (id) wrapEl.dataset.id = id;
 
   if (senderName) {
     const label = document.createElement('div');
@@ -235,10 +212,20 @@ function appendMessage(text, who, senderName) {
   el.className = `msg ${who}`;
   el.style.maxWidth = '100%';
   el.textContent = text;
+  if (who === 'me') {
+    el.style.cursor = 'pointer';
+    el.title = 'Delete karne ke liye tap karo';
+    el.addEventListener('click', () => {
+      if (!wrapEl.dataset.id) return; // not yet acknowledged by server
+      const ok = window.confirm('Ye message delete karna hai?');
+      if (ok) send({ type: 'delete-message', id: Number(wrapEl.dataset.id) });
+    });
+  }
   wrapEl.appendChild(el);
 
   $('chat-messages').appendChild(wrapEl);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+  return wrapEl;
 }
 
 function appendSystemMessage(text) {
@@ -247,130 +234,6 @@ function appendSystemMessage(text) {
   el.textContent = text;
   $('chat-messages').appendChild(el);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
-}
-
-// ---------- UI: tabs ----------
-function switchTab(name) {
-  document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
-  $(`tab-${name}`).classList.add('active');
-  $(`panel-${name}`).classList.add('active');
-  if (name === 'history') {
-    $('history-detail').classList.remove('open');
-    $('history-list').classList.remove('hidden');
-    $('history-list').innerHTML = '<p class="empty-note">History load ho rahi hai…</p>';
-    send({ type: 'history' });
-  }
-}
-
-$('tab-live').addEventListener('click', () => switchTab('live'));
-$('tab-history').addEventListener('click', () => switchTab('history'));
-$('btn-history-back').addEventListener('click', () => {
-  $('history-detail').classList.remove('open');
-  $('history-list').classList.remove('hidden');
-});
-
-// ---------- UI: WhatsApp-style history list ----------
-async function renderHistoryList(data) {
-  const { names, sessions } = data;
-  const container = $('history-list');
-  container.innerHTML = '';
-
-  if (!sessions || sessions.length === 0) {
-    container.innerHTML = '<p class="empty-note">Abhi tak koi purani baatcheet save nahi hui.</p>';
-    return;
-  }
-
-  for (const s of sessions) {
-    const lastMsg = s.messages[s.messages.length - 1];
-    let preview = '…';
-    if (lastMsg) {
-      try {
-        const text = await decryptText(lastMsg.iv, lastMsg.ct);
-        const who = lastMsg.slot === mySlot ? 'Tum: ' : '';
-        preview = who + text;
-      } catch (e) {
-        preview = '[decrypt error]';
-      }
-    }
-
-    const card = document.createElement('div');
-    card.className = 'history-card';
-    card.innerHTML = `
-      <div class="history-card-open" role="button">
-        <div class="history-avatar">💬</div>
-        <div class="history-card-body">
-          <div class="history-card-top">
-            <span class="history-card-date">${new Date(s.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
-          </div>
-          <div class="history-card-preview"></div>
-        </div>
-      </div>
-      <button class="history-card-delete" aria-label="Delete karo">🗑</button>
-    `;
-    card.querySelector('.history-card-preview').textContent = preview;
-    card.querySelector('.history-card-open').addEventListener('click', () => openHistoryDetail(s, names));
-    card.querySelector('.history-card-delete').addEventListener('click', (e) => {
-      e.stopPropagation();
-      confirmAndDelete(s.id, card);
-    });
-    container.appendChild(card);
-  }
-}
-
-let currentDetailSessionId = null;
-
-function confirmAndDelete(sessionId, cardEl) {
-  const ok = window.confirm('Ye baatcheet hamesha ke liye delete ho jayegi. Pakka?');
-  if (!ok) return;
-  send({ type: 'delete-session', sessionId });
-}
-
-$('btn-delete-session').addEventListener('click', () => {
-  if (!currentDetailSessionId) return;
-  const ok = window.confirm('Ye baatcheet hamesha ke liye delete ho jayegi. Pakka?');
-  if (!ok) return;
-  send({ type: 'delete-session', sessionId: currentDetailSessionId });
-});
-
-async function openHistoryDetail(session, names) {
-  currentDetailSessionId = session.id;
-  const container = $('history-detail-messages');
-  container.innerHTML = '';
-
-  for (const m of session.messages) {
-    const who = m.slot === mySlot ? 'me' : 'peer';
-    const senderName = m.slot === mySlot ? (myName || 'Tum') : (names[m.slot] || 'Doosra insaan');
-    let text;
-    try {
-      text = await decryptText(m.iv, m.ct);
-    } catch (e) {
-      text = '[decrypt error]';
-    }
-
-    const wrapEl = document.createElement('div');
-    wrapEl.style.display = 'flex';
-    wrapEl.style.flexDirection = 'column';
-    wrapEl.style.alignItems = who === 'me' ? 'flex-end' : 'flex-start';
-    wrapEl.style.maxWidth = '78%';
-    wrapEl.style.alignSelf = who === 'me' ? 'flex-end' : 'flex-start';
-
-    const label = document.createElement('div');
-    label.className = 'msg-name';
-    label.textContent = senderName;
-    wrapEl.appendChild(label);
-
-    const el = document.createElement('div');
-    el.className = `msg ${who}`;
-    el.style.maxWidth = '100%';
-    el.textContent = text;
-    wrapEl.appendChild(el);
-
-    container.appendChild(wrapEl);
-  }
-
-  $('history-list').classList.add('hidden');
-  $('history-detail').classList.add('open');
 }
 
 // ---------- event wiring ----------
@@ -400,7 +263,6 @@ $('input-code').addEventListener('keydown', (e) => {
 });
 
 $('btn-leave').addEventListener('click', () => {
-  send({ type: 'leave' });
   resetToHome();
 });
 
@@ -408,10 +270,14 @@ $('chat-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = $('chat-input');
   const text = input.value.trim();
-  if (!text || !sessionLive) return;
+  if (!text) return;
+  const tempId = makeTempId();
   const payload = await encryptText(text);
-  send({ type: 'message', ...payload });
-  appendMessage(text, 'me', myName);
+  send({ type: 'message', ...payload, tempId });
+
+  const el = appendMessage(text, 'me', myName, null);
+  el.dataset.tempid = tempId;
+
   input.value = '';
 });
 
@@ -420,7 +286,6 @@ function resetToHome() {
   mySlot = null;
   peerName = '';
   sharedKey = null;
-  sessionLive = false;
   $('input-code').value = '';
   $('btn-enter').disabled = false;
   $('home-error').textContent = '';
@@ -434,3 +299,4 @@ function resetToHome() {
 })();
 
 connectSocket();
+  
