@@ -236,6 +236,25 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'image') {
+      try {
+        const ins = await pool.query(
+          'INSERT INTO messages (code, sender_slot, iv, ciphertext) VALUES ($1,$2,$3,$4) RETURNING id',
+          [ws.code, ws.slot, msg.iv, msg.ct]
+        );
+        const id = ins.rows[0].id;
+
+        send(ws, { type: 'image-ack', tempId: msg.tempId, id });
+
+        const peer = getPeerSocket(ws.code, ws.slot);
+        send(peer, { type: 'image', id, slot: ws.slot, iv: msg.iv, ct: msg.ct });
+      } catch (e) {
+        console.error('image save failed', e.message);
+        send(ws, { type: 'error', message: 'Image save nahi ho paya.' });
+      }
+      return;
+    }
+
     if (msg.type === 'delete-message') {
       const id = Number(msg.id);
       if (!id) return;
