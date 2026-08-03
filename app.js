@@ -346,16 +346,16 @@ $('file-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
-  // Validate: JPG only, max 3MB
+  // Validate: JPG only, max 1MB (3MB was causing encryption issues)
   const validTypes = ['image/jpeg'];
-  const maxSize = 3 * 1024 * 1024; // 3MB
+  const maxSize = 1 * 1024 * 1024; // 1MB
 
   if (!validTypes.includes(file.type)) {
     alert('Sirf JPG file allowed hai.');
     return;
   }
   if (file.size > maxSize) {
-    alert('Image 3MB se bada nahi hona chahiye.');
+    alert('Image 1MB se bada nahi hona chahiye.');
     return;
   }
 
@@ -403,8 +403,8 @@ $('file-input').addEventListener('change', async (e) => {
     $('chat-messages').appendChild(wrapEl);
     $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
   } catch (err) {
-    console.error(err);
-    alert('Image upload mein error.');
+    console.error('Image error:', err);
+    alert('Image bhejne mein error. Check karov: size 1MB se zyada to nahi?');
   }
 
   // Reset file input
@@ -429,4 +429,4 @@ function resetToHome() {
 })();
 
 connectSocket();
-       
+        
