@@ -328,6 +328,18 @@ body {
   margin-bottom: 2px;
   padding: 0 4px;
 }
+.msg.image {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  max-width: 100%;
+}
+.msg.image img {
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 12px;
+  display: block;
+}
 
 .chat-input-row {
   display: flex;
@@ -349,4 +361,3 @@ body {
   outline: none;
 }
 .chat-input:focus { border-color: var(--accent); }
-            
