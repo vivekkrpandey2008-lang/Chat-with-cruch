@@ -159,6 +159,25 @@ async function handleServerMessage(msg) {
       break;
     }
 
+    case 'image-ack': {
+      const el = document.querySelector(`[data-tempid="${msg.tempId}"]`);
+      if (el) {
+        el.dataset.id = msg.id;
+        delete el.dataset.tempid;
+      }
+      break;
+    }
+
+    case 'image': {
+      try {
+        const base64 = await decryptText(msg.iv, msg.ct);
+        appendImage(base64, 'peer', peerName || 'Doosra insaan', msg.id);
+      } catch (e) {
+        appendSystemMessage('Image decrypt nahi ho paaya.');
+      }
+      break;
+    }
+
     case 'message-deleted': {
       const el = document.querySelector(`[data-id="${msg.id}"]`);
       if (el) el.remove();
@@ -236,6 +255,43 @@ function appendSystemMessage(text) {
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
 }
 
+function appendImage(base64, who, senderName, id) {
+  const wrapEl = document.createElement('div');
+  wrapEl.style.display = 'flex';
+  wrapEl.style.flexDirection = 'column';
+  wrapEl.style.alignItems = who === 'me' ? 'flex-end' : 'flex-start';
+  wrapEl.style.maxWidth = '78%';
+  wrapEl.style.alignSelf = who === 'me' ? 'flex-end' : 'flex-start';
+
+  if (id) wrapEl.dataset.id = id;
+
+  if (senderName) {
+    const label = document.createElement('div');
+    label.className = 'msg-name';
+    label.textContent = senderName;
+    wrapEl.appendChild(label);
+  }
+
+  const el = document.createElement('div');
+  el.className = `msg image ${who}`;
+  const img = document.createElement('img');
+  img.src = base64;
+  el.appendChild(img);
+  if (who === 'me') {
+    el.style.cursor = 'pointer';
+    el.title = 'Delete karne ke liye tap karo';
+    el.addEventListener('click', () => {
+      if (!wrapEl.dataset.id) return;
+      const ok = window.confirm('Ye image delete karna hai?');
+      if (ok) send({ type: 'delete-message', id: Number(wrapEl.dataset.id) });
+    });
+  }
+  wrapEl.appendChild(el);
+
+  $('chat-messages').appendChild(wrapEl);
+  $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+}
+
 // ---------- event wiring ----------
 $('btn-enter').addEventListener('click', async () => {
   const code = normalizeCodeInput($('input-code').value);
@@ -281,6 +337,80 @@ $('chat-form').addEventListener('submit', async (e) => {
   input.value = '';
 });
 
+$('btn-image').addEventListener('click', (e) => {
+  e.preventDefault();
+  $('file-input').click();
+});
+
+$('file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Validate: JPG only, max 3MB
+  const validTypes = ['image/jpeg'];
+  const maxSize = 3 * 1024 * 1024; // 3MB
+
+  if (!validTypes.includes(file.type)) {
+    alert('Sirf JPG file allowed hai.');
+    return;
+  }
+  if (file.size > maxSize) {
+    alert('Image 3MB se bada nahi hona chahiye.');
+    return;
+  }
+
+  try {
+    // Read file as base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const tempId = makeTempId();
+    const payload = await encryptText(base64);
+    send({ type: 'image', ...payload, tempId });
+
+    // Show local preview
+    const wrapEl = document.createElement('div');
+    wrapEl.style.display = 'flex';
+    wrapEl.style.flexDirection = 'column';
+    wrapEl.style.alignItems = 'flex-end';
+    wrapEl.style.maxWidth = '78%';
+    wrapEl.style.alignSelf = 'flex-end';
+    wrapEl.dataset.tempid = tempId;
+
+    const label = document.createElement('div');
+    label.className = 'msg-name';
+    label.textContent = myName;
+    wrapEl.appendChild(label);
+
+    const el = document.createElement('div');
+    el.className = 'msg image me';
+    const img = document.createElement('img');
+    img.src = base64;
+    el.appendChild(img);
+    el.style.cursor = 'pointer';
+    el.title = 'Delete karne ke liye tap karo';
+    el.addEventListener('click', () => {
+      if (!wrapEl.dataset.id) return;
+      const ok = window.confirm('Ye image delete karna hai?');
+      if (ok) send({ type: 'delete-message', id: Number(wrapEl.dataset.id) });
+    });
+    wrapEl.appendChild(el);
+
+    $('chat-messages').appendChild(wrapEl);
+    $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+  } catch (err) {
+    console.error(err);
+    alert('Image upload mein error.');
+  }
+
+  // Reset file input
+  e.target.value = '';
+});
+
 function resetToHome() {
   myCode = null;
   mySlot = null;
@@ -299,4 +429,4 @@ function resetToHome() {
 })();
 
 connectSocket();
-  
+       
