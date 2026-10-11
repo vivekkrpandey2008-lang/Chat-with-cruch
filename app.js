@@ -243,6 +243,22 @@ function updatePeerNameTag(online) {
 }
 
 // ---------- UI: messages ----------
+// Apne message/image ke neeche dikhne wala delete button
+function addDeleteButton(wrapEl, what) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-delete-btn';
+  btn.textContent = '🗑 Delete';
+  btn.style.cssText = 'background:none;border:none;color:inherit;opacity:.6;font-size:12px;padding:4px 2px;cursor:pointer;';
+  btn.addEventListener('click', () => {
+    if (!wrapEl.dataset.id) return; // server ack ka wait
+    if (window.confirm(`Ye ${what} delete karna hai?`)) {
+      send({ type: 'delete-message', id: Number(wrapEl.dataset.id) });
+    }
+  });
+  wrapEl.appendChild(btn);
+}
+
 function appendMessage(text, who, senderName, id) {
   const wrapEl = document.createElement('div');
   wrapEl.style.display = 'flex';
@@ -274,6 +290,7 @@ function appendMessage(text, who, senderName, id) {
     });
   }
   wrapEl.appendChild(el);
+  if (who === 'me') addDeleteButton(wrapEl, 'message');
 
   $('chat-messages').appendChild(wrapEl);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
@@ -320,6 +337,7 @@ function appendImage(base64, who, senderName, id) {
     });
   }
   wrapEl.appendChild(el);
+  if (who === 'me') addDeleteButton(wrapEl, 'image');
 
   $('chat-messages').appendChild(wrapEl);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
@@ -461,6 +479,7 @@ $('file-input').addEventListener('change', async (e) => {
       if (ok) send({ type: 'delete-message', id: Number(wrapEl.dataset.id) });
     });
     wrapEl.appendChild(el);
+    addDeleteButton(wrapEl, 'image');
 
     $('chat-messages').appendChild(wrapEl);
     $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
