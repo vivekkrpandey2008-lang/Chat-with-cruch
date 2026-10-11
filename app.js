@@ -95,6 +95,7 @@ function connectSocket() {
     }
   });
   ws.addEventListener('close', () => {
+    endCall(false);
     if (myCode) {
       appendSystemMessage('Server se connection toot gaya. Page reload karo.');
     } else {
@@ -168,6 +169,7 @@ async function handleServerMessage(msg) {
     }
 
     case 'peer-status': {
+      if (!msg.online && callState !== 'idle') endCall(false, 'Doosra insaan offline ho gaya.');
       if (msg.name) peerName = msg.name;
       updatePeerNameTag(msg.online);
       break;
@@ -210,6 +212,13 @@ async function handleServerMessage(msg) {
       }
       break;
     }
+
+    case 'call-offer': onCallOffer(msg); break;
+    case 'call-answer': onCallAnswer(msg); break;
+    case 'call-ice': onCallIce(msg); break;
+    case 'call-end': endCall(false, 'Call khatam ho gayi.'); break;
+    case 'call-reject': endCall(false, msg.reason === 'busy' ? 'Doosra insaan busy hai.' : 'Call reject ho gayi.'); break;
+    case 'call-unavailable': endCall(false, 'Doosra insaan abhi online nahi hai.'); break;
 
     case 'message-deleted': {
       const el = document.querySelector(`[data-id="${msg.id}"]`);
@@ -341,6 +350,300 @@ function appendImage(base64, who, senderName, id) {
 
   $('chat-messages').appendChild(wrapEl);
   $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+}
+
+// ---------- voice / video call (WebRTC) ----------
+// Audio/video seedha dono phones ke beech jaata hai (DTLS-SRTP encrypted); server sirf signaling karta hai.
+// Kuch networks (jaise kuch mobile data) par TURN server chahiye hota hai. Apna TURN ho to yahan daalo.
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    // { urls: 'turn:YOUR_TURN_HOST:3478', username: 'USER', credential: 'PASS' },
+  ],
+};
+
+let callState = 'idle'; // idle | calling | ringing | active
+let pc = null;
+let localStream = null;
+let pendingOffer = null;
+let iceQueue = [];
+let callIsVideo = false;
+let callTimer = null;
+let callSecs = 0;
+
+(function injectCallUI() {
+  const style = document.createElement('style');
+  style.textContent = `
+    .call-btn{background:none;border:1px solid rgba(255,255,255,.2);color:inherit;border-radius:10px;padding:4px 9px;font-size:16px;cursor:pointer}
+    .topbar-actions{display:flex;gap:6px;align-items:center}
+    #call-overlay{position:fixed;inset:0;z-index:1000;background:#0b0b10;display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff}
+    #call-overlay.open{display:flex}
+    #call-remote{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#0b0b10}
+    #call-local{position:absolute;right:14px;top:calc(env(safe-area-inset-top,0px) + 14px);width:96px;height:128px;object-fit:cover;border-radius:12px;border:2px solid rgba(255,255,255,.4);background:#222;z-index:2;transform:scaleX(-1)}
+    #call-info{position:relative;z-index:2;text-align:center;text-shadow:0 1px 6px rgba(0,0,0,.7)}
+    #call-info .who{font-size:24px;font-weight:600}
+    #call-info .st{opacity:.85;margin-top:6px}
+    #call-controls{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 36px);left:0;right:0;display:flex;justify-content:center;gap:18px;z-index:3}
+    .call-round{width:58px;height:58px;border-radius:50%;border:none;font-size:24px;color:#fff;background:rgba(255,255,255,.18);cursor:pointer}
+    .call-round.off{background:#fff;color:#000}
+    .call-round.end{background:#e5384b}
+    .call-round.ok{background:#22b455}
+    #call-incoming{position:fixed;inset:0;z-index:1001;background:rgba(10,10,16,.94);display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff;gap:10px}
+    #call-incoming.open{display:flex}
+    #call-incoming .who{font-size:26px;font-weight:600}
+    #call-incoming .row{display:flex;gap:40px;margin-top:30px}
+  `;
+  document.head.appendChild(style);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'call-overlay';
+  overlay.innerHTML = `
+    <video id="call-remote" autoplay playsinline></video>
+    <video id="call-local" autoplay playsinline muted></video>
+    <div id="call-info"><div class="who" id="call-who"></div><div class="st" id="call-status"></div></div>
+    <div id="call-controls">
+      <button type="button" class="call-round" id="call-mute" title="Mute">🎤</button>
+      <button type="button" class="call-round" id="call-cam" title="Camera">📷</button>
+      <button type="button" class="call-round end" id="call-hang" title="End">📵</button>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const inc = document.createElement('div');
+  inc.id = 'call-incoming';
+  inc.innerHTML = `
+    <div style="font-size:54px">📞</div>
+    <div class="who" id="inc-who"></div>
+    <div id="inc-kind" style="opacity:.8"></div>
+    <div class="row">
+      <button type="button" class="call-round end" id="inc-reject" title="Reject">✖</button>
+      <button type="button" class="call-round ok" id="inc-accept" title="Accept">✔</button>
+    </div>`;
+  document.body.appendChild(inc);
+
+  // top bar mein call buttons
+  const leave = document.getElementById('btn-leave');
+  if (leave) {
+    const box = document.createElement('div');
+    box.className = 'topbar-actions';
+    box.innerHTML = `
+      <button type="button" class="call-btn" id="btn-voice" title="Voice call">📞</button>
+      <button type="button" class="call-btn" id="btn-video" title="Video call">🎥</button>`;
+    leave.parentNode.insertBefore(box, leave);
+    box.appendChild(leave);
+  }
+
+  document.getElementById('btn-voice').addEventListener('click', () => startCall(false));
+  document.getElementById('btn-video').addEventListener('click', () => startCall(true));
+  document.getElementById('call-hang').addEventListener('click', () => endCall(true));
+  document.getElementById('inc-reject').addEventListener('click', () => {
+    send({ type: 'call-reject' });
+    pendingOffer = null;
+    iceQueue = [];
+    callState = 'idle';
+    $('call-incoming').classList.remove('open');
+  });
+  document.getElementById('inc-accept').addEventListener('click', acceptCall);
+  document.getElementById('call-mute').addEventListener('click', (e) => toggleTrack('audio', e.currentTarget, '🎤', '🔇'));
+  document.getElementById('call-cam').addEventListener('click', (e) => toggleTrack('video', e.currentTarget, '📷', '🚫'));
+})();
+
+function toggleTrack(kind, btn, onIcon, offIcon) {
+  if (!localStream) return;
+  const tracks = kind === 'audio' ? localStream.getAudioTracks() : localStream.getVideoTracks();
+  if (!tracks.length) return;
+  const enable = !tracks[0].enabled;
+  tracks.forEach((t) => (t.enabled = enable));
+  btn.textContent = enable ? onIcon : offIcon;
+  btn.classList.toggle('off', !enable);
+}
+
+function setCallStatus(text) {
+  const el = $('call-status');
+  if (el) el.textContent = text;
+}
+
+function showCallUI() {
+  $('call-who').textContent = peerName || 'Doosra insaan';
+  $('call-cam').style.display = callIsVideo ? '' : 'none';
+  $('call-local').style.display = callIsVideo ? '' : 'none';
+  $('call-mute').textContent = '🎤';
+  $('call-mute').classList.remove('off');
+  $('call-cam').textContent = '📷';
+  $('call-cam').classList.remove('off');
+  $('call-overlay').classList.add('open');
+}
+
+async function getMedia(video) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Is browser mein call support nahi hai (HTTPS chahiye).');
+  }
+  return navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true },
+    video: video ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false,
+  });
+}
+
+function createPeerConnection() {
+  pc = new RTCPeerConnection(RTC_CONFIG);
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate) send({ type: 'call-ice', candidate: ev.candidate });
+  };
+  pc.ontrack = (ev) => {
+    const remote = $('call-remote');
+    if (remote.srcObject !== ev.streams[0]) remote.srcObject = ev.streams[0];
+    remote.play().catch(() => {});
+  };
+  pc.onconnectionstatechange = () => {
+    if (!pc) return;
+    if (pc.connectionState === 'connected') {
+      callState = 'active';
+      startCallTimer();
+    } else if (pc.connectionState === 'failed') {
+      endCall(true, 'Connection nahi ban paya (network). Dobara try karo.');
+    } else if (pc.connectionState === 'disconnected') {
+      setCallStatus('Connection weak hai…');
+    }
+  };
+}
+
+function startCallTimer() {
+  clearInterval(callTimer);
+  callSecs = 0;
+  callTimer = setInterval(() => {
+    callSecs++;
+    const m = String(Math.floor(callSecs / 60)).padStart(2, '0');
+    const s = String(callSecs % 60).padStart(2, '0');
+    setCallStatus(`${m}:${s}`);
+  }, 1000);
+}
+
+async function startCall(video) {
+  if (!myCode) return;
+  if (callState !== 'idle') return;
+  callIsVideo = video;
+  callState = 'calling';
+  try {
+    localStream = await getMedia(video);
+  } catch (err) {
+    callState = 'idle';
+    alert(err.message && err.message.includes('support') ? err.message : 'Mic/camera ki permission do, phir try karo.');
+    return;
+  }
+  $('call-local').srcObject = localStream;
+  showCallUI();
+  setCallStatus('Ringing…');
+  createPeerConnection();
+  localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'call-offer', video, sdp: pc.localDescription });
+  } catch (err) {
+    console.error(err);
+    endCall(true, 'Call shuru nahi ho payi.');
+    return;
+  }
+  // 40 sec mein jawab na aaye to band
+  const thisPc = pc;
+  setTimeout(() => {
+    if (callState === 'calling' && pc === thisPc) endCall(true, 'Koi jawab nahi mila.');
+  }, 40000);
+}
+
+function onCallOffer(msg) {
+  if (callState !== 'idle') {
+    send({ type: 'call-reject', reason: 'busy' });
+    return;
+  }
+  callState = 'ringing';
+  pendingOffer = msg;
+  iceQueue = [];
+  callIsVideo = !!msg.video;
+  $('inc-who').textContent = peerName || 'Doosra insaan';
+  $('inc-kind').textContent = callIsVideo ? 'Video call aa rahi hai…' : 'Voice call aa rahi hai…';
+  $('call-incoming').classList.add('open');
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+}
+
+async function acceptCall() {
+  if (callState !== 'ringing' || !pendingOffer) return;
+  $('call-incoming').classList.remove('open');
+  try {
+    localStream = await getMedia(callIsVideo);
+  } catch (err) {
+    send({ type: 'call-reject' });
+    callState = 'idle';
+    pendingOffer = null;
+    alert('Mic/camera ki permission do, phir try karo.');
+    return;
+  }
+  $('call-local').srcObject = localStream;
+  showCallUI();
+  setCallStatus('Connecting…');
+  createPeerConnection();
+  localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+  try {
+    await pc.setRemoteDescription(pendingOffer.sdp);
+    pendingOffer = null;
+    for (const c of iceQueue) await pc.addIceCandidate(c).catch(() => {});
+    iceQueue = [];
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    send({ type: 'call-answer', sdp: pc.localDescription });
+    callState = 'active';
+  } catch (err) {
+    console.error(err);
+    endCall(true, 'Call connect nahi ho payi.');
+  }
+}
+
+async function onCallAnswer(msg) {
+  if (!pc || callState !== 'calling') return;
+  try {
+    await pc.setRemoteDescription(msg.sdp);
+    for (const c of iceQueue) await pc.addIceCandidate(c).catch(() => {});
+    iceQueue = [];
+    setCallStatus('Connecting…');
+  } catch (err) {
+    console.error(err);
+    endCall(true, 'Call connect nahi ho payi.');
+  }
+}
+
+async function onCallIce(msg) {
+  if (!msg.candidate) return;
+  if (pc && pc.remoteDescription) {
+    pc.addIceCandidate(msg.candidate).catch(() => {});
+  } else {
+    iceQueue.push(msg.candidate); // remote description aane tak ruko
+  }
+}
+
+function endCall(notifyPeer, note) {
+  if (callState === 'idle' && !pc && !localStream) return;
+  if (notifyPeer && callState !== 'idle') send({ type: 'call-end' });
+  clearInterval(callTimer);
+  callTimer = null;
+  if (pc) {
+    pc.onicecandidate = pc.ontrack = pc.onconnectionstatechange = null;
+    pc.close();
+    pc = null;
+  }
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+  }
+  const r = $('call-remote');
+  const l = $('call-local');
+  if (r) r.srcObject = null;
+  if (l) l.srcObject = null;
+  pendingOffer = null;
+  iceQueue = [];
+  callState = 'idle';
+  $('call-overlay').classList.remove('open');
+  $('call-incoming').classList.remove('open');
+  if (note && myCode) appendSystemMessage(note);
 }
 
 // ---------- event wiring ----------
@@ -493,6 +796,7 @@ $('file-input').addEventListener('change', async (e) => {
 });
 
 function resetToHome() {
+  endCall(true);
   myCode = null;
   mySlot = null;
   peerName = '';
