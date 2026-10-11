@@ -240,6 +240,19 @@ wss.on('connection', (ws) => {
 
     if (!ws.code) return; // must 'enter' before anything else
 
+    // Voice/video call signaling (WebRTC): server sirf peer tak relay karta hai
+    if (typeof msg.type === 'string' && msg.type.startsWith('call-')) {
+      const allowed = ['call-offer', 'call-answer', 'call-ice', 'call-end', 'call-reject'];
+      if (!allowed.includes(msg.type)) return;
+      const peer = getPeerSocket(ws.code, ws.slot);
+      if (!peer) {
+        if (msg.type === 'call-offer') send(ws, { type: 'call-unavailable' });
+        return;
+      }
+      send(peer, { type: msg.type, video: !!msg.video, sdp: msg.sdp, candidate: msg.candidate, reason: msg.reason });
+      return;
+    }
+
     if (msg.type === 'message') {
       try {
         const ins = await pool.query(
