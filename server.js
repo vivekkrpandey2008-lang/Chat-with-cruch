@@ -139,7 +139,7 @@ async function getRoomNames(code) {
 
 async function fetchMessages(code) {
   const res = await pool.query(
-    'SELECT id, sender_slot, iv, ciphertext, created_at FROM messages WHERE code = $1 ORDER BY created_at ASC LIMIT 1000',
+    'SELECT * FROM (SELECT id, sender_slot, iv, ciphertext, created_at FROM messages WHERE code = $1 ORDER BY created_at DESC, id DESC LIMIT 30) t ORDER BY created_at ASC, id ASC',
     [code]
   );
   return res.rows.map((m) => ({
