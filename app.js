@@ -7,7 +7,13 @@ function showScreen(id) {
 }
 
 function buf2b64(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000; // chunk karke convert karo, warna bade data par stack overflow hota hai
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 function b642buf(b64) {
   const bin = atob(b64);
@@ -337,6 +343,31 @@ $('chat-form').addEventListener('submit', async (e) => {
   input.value = '';
 });
 
+// Image ko resize + JPEG mein compress karta hai (max 1600px, ~300-600KB)
+function compressImage(file, maxDim = 1600, quality = 0.75) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      const scale = Math.min(1, maxDim / Math.max(width, height));
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
+    img.src = url;
+  });
+}
+
 $('btn-image').addEventListener('click', (e) => {
   e.preventDefault();
   $('file-input').click();
@@ -346,27 +377,21 @@ $('file-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
-  // Validate: JPG only, max 1MB (3MB was causing encryption issues)
-  const validTypes = ['image/jpeg'];
-  const maxSize = 1 * 1024 * 1024; // 1MB
-
-  if (!validTypes.includes(file.type)) {
-    alert('Sirf JPG file allowed hai.');
+  // Koi bhi image allowed (jpg/png/webp), bahut bada ho to 15MB tak
+  if (!file.type.startsWith('image/')) {
+    alert('Sirf image file allowed hai.');
+    e.target.value = '';
     return;
   }
-  if (file.size > maxSize) {
-    alert('Image 1MB se bada nahi hona chahiye.');
+  if (file.size > 15 * 1024 * 1024) {
+    alert('Image 15MB se bada nahi hona chahiye.');
+    e.target.value = '';
     return;
   }
 
   try {
     // Read file as base64
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    const base64 = await compressImage(file);
 
     const tempId = makeTempId();
     const payload = await encryptText(base64);
@@ -404,7 +429,7 @@ $('file-input').addEventListener('change', async (e) => {
     $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
   } catch (err) {
     console.error('Image error:', err);
-    alert('Image bhejne mein error. Check karov: size 1MB se zyada to nahi?');
+    alert('Image bhejne mein error. Dobara try karo.');
   }
 
   // Reset file input
