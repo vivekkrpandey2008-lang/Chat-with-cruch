@@ -345,6 +345,16 @@ $('btn-enter').addEventListener('click', async () => {
   showScreen('screen-connecting');
   sharedKey = await deriveKeyFromCode(code);
   send({ type: 'enter', code, deviceId, name });
+
+  // 20 sec mein jawab na aaye to spinner mein mat atko
+  clearTimeout(window.__enterTimer);
+  window.__enterTimer = setTimeout(() => {
+    if (!myCode) {
+      showScreen('screen-home');
+      $('home-error').textContent = 'Server jawab nahi de raha (DB ya server problem). Site ke aage /health kholkar dekho.';
+      $('btn-enter').disabled = false;
+    }
+  }, 20000);
 });
 
 $('input-code').addEventListener('keydown', (e) => {
