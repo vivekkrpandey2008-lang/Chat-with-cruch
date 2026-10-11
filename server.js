@@ -15,6 +15,28 @@ const wss = new WebSocket.Server({ server });
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: 8000, // DB na mile to hang hone ke bajay error do
+  statement_timeout: 15000,
+  max: 5,
+});
+pool.on('error', (e) => console.error('DB pool error:', e.message));
+
+// Debug: browser mein  <aapki-site>/health  kholo
+app.get('/health', async (req, res) => {
+  const out = { server: 'ok', hasDatabaseUrl: !!process.env.DATABASE_URL };
+  try {
+    const t = Date.now();
+    await pool.query('SELECT 1');
+    out.db = 'ok';
+    out.dbMs = Date.now() - t;
+    const m = await pool.query('SELECT COUNT(*)::int AS n, COALESCE(SUM(length(ciphertext)),0)::bigint AS bytes FROM messages');
+    out.messages = m.rows[0].n;
+    out.messagesMB = Math.round(Number(m.rows[0].bytes) / 1048576);
+  } catch (e) {
+    out.db = 'FAILED';
+    out.error = e.message;
+  }
+  res.json(out);
 });
 
 async function initDb() {
@@ -167,6 +189,7 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'enter') {
+      console.log('enter request', msg.code);
       const code = normalizeCode(msg.code);
       const deviceId = String(msg.deviceId || '').slice(0, 80);
       const name = String(msg.name || '').trim().slice(0, 30) || 'Anonymous';
