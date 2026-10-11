@@ -77,17 +77,43 @@ const dec = new TextDecoder();
 const deviceId = getDeviceId();
 
 // ---------- websocket ----------
+let sendQueue = [];
+
 function connectSocket() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
-  ws.addEventListener('message', (ev) => handleServerMessage(JSON.parse(ev.data)));
+  ws.addEventListener('open', () => {
+    const q = sendQueue;
+    sendQueue = [];
+    q.forEach((o) => ws.send(JSON.stringify(o)));
+  });
+  ws.addEventListener('message', (ev) => {
+    try {
+      handleServerMessage(JSON.parse(ev.data));
+    } catch (e) {
+      console.error('Bad server message', e);
+    }
+  });
   ws.addEventListener('close', () => {
-    if (myCode) appendSystemMessage('Server se connection toot gaya. Page reload karo.');
+    if (myCode) {
+      appendSystemMessage('Server se connection toot gaya. Page reload karo.');
+    } else {
+      showScreen('screen-home');
+      $('home-error').textContent = 'Server se connect nahi ho paya. Thodi der baad dobara try karo.';
+      $('btn-enter').disabled = false;
+    }
   });
 }
 
 function send(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  } else if (ws && ws.readyState === WebSocket.CONNECTING) {
+    sendQueue.push(obj); // connect hote hi bhej denge
+  } else {
+    sendQueue.push(obj);
+    connectSocket(); // socket band tha, dobara connect karo
+  }
 }
 
 // ---------- crypto: key derived straight from the shared code (no network exchange) ----------
@@ -132,7 +158,8 @@ async function handleServerMessage(msg) {
         const senderName = m.slot === mySlot ? myName : (peerName || 'Doosra insaan');
         try {
           const text = await decryptText(m.iv, m.ct);
-          appendMessage(text, who, senderName, m.id);
+          if (text.startsWith('data:image/')) appendImage(text, who, senderName, m.id);
+          else appendMessage(text, who, senderName, m.id);
         } catch (e) {
           appendMessage('[decrypt error]', who, senderName, m.id);
         }
