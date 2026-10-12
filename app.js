@@ -246,7 +246,7 @@ async function handleServerMessage(msg) {
 function updatePeerNameTag(online) {
   const tag = $('peer-name-tag');
   if (peerName) {
-    tag.textContent = online ? `${peerName} ke saath (online)` : `${peerName} ke saath (offline)`;
+    tag.textContent = online ? `${peerName} you love (online)` : `${peerName} you love (offline)`;
   } else {
     tag.textContent = 'Doosre insaan ka wait ho raha hai…';
   }
